@@ -233,7 +233,7 @@ object DTreeUtil extends Serializable {
           val model: DecisionTreeModel = DecisionTree.trainClassifier(training, numClasses, catInfo, impurity, depth, bins)
           training.unpersist()
           // validatiing model
-          val predictLabels = model.predict( validation.map(_.features) ).
+          val predictLabels: RDD[(Double, Double)] = model.predict( validation.map(_.features) ).
             zip( validation.map(_.label) )
           validation.unpersist()
           val metric = new MulticlassMetrics(predictLabels)

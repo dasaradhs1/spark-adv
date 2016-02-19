@@ -2,11 +2,12 @@ package ch04
 
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.mllib.tree.{RandomForest, DecisionTree}
-import org.apache.spark.mllib.tree.model.{RandomForestModel, DecisionTreeModel}
+import org.apache.spark.mllib.tree.model.{Node, RandomForestModel, DecisionTreeModel}
 import org.apache.spark.rdd._
 import org.apache.spark.{SparkContext, SparkConf}
 import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.regression._
+import tw.com.chttl.spark.mllib.util.DTUtil
 import tw.com.chttl.spark.test.util._
 import java.io._
 
@@ -268,6 +269,7 @@ fMeasure=0.9261723940869062, precision=0.9261723940869062, recall=0.926172394086
     val dataLabeled = DTreeUtil.covtype2CatFeature(sc, inpath)
     val Array(dataTrain, dataCV, dataTest) = dataLabeled.randomSplit(Array(0.8, 0.1, 0.1))
     dataTrain.cache();dataCV.cache();dataTest.cache()
+    //
     val model: RandomForestModel = RandomForest.trainClassifier(dataTrain, 7, Map(10 -> 4, 11 -> 40), 20, "auto", "entropy", 30, 300)
     /*
 15/09/09 11:09:13 INFO RandomForest:   init: 7.010611743
@@ -290,14 +292,15 @@ model: org.apache.spark.mllib.tree.model.RandomForestModel = TreeEnsembleModel c
 1.0      35.0     109.0   6.0    4.0    1529.0  0.0
 75.0     9.0      0.0     0.0    0.0    0.0     1981.0
      */
-    val model2 = RandomForest.trainClassifier(dataTrain.union(dataCV), 7, Map(10 -> 4, 11 -> 40), 20, "auto", "entropy", 30, 300)
+    val model2 = TimeEvaluation.time( RandomForest.trainClassifier(dataTrain.union(dataCV), 7, Map(10 -> 4, 11 -> 40), 20, "auto", "entropy", 30, 300) )
     /*
-15/09/09 11:59:19 INFO RandomForest:   init: 2.876171041
-  total: 1074.584336908
-  findSplitsBins: 0.395001858
-  findBestSplits: 1070.250277943
-  chooseSplits: 1069.680879317
+[local mode, 16 cores/32GB]
+time: 1018484.382225ms
 model2: org.apache.spark.mllib.tree.model.RandomForestModel = TreeEnsembleModel classifier with 20 trees
+[cluster mode, 12 cores/48GB * 2 nodes]
+time: 1088371.736012ms
+model2: org.apache.spark.mllib.tree.model.RandomForestModel = TreeEnsembleModel classifier with 20 trees
+
      */
     val predictionsAndLabels2 = dataTest.map(example => (model.predict(example.features), example.label) )
     val metrics2 = new MulticlassMetrics(predictionsAndLabels)
@@ -499,8 +502,7 @@ fMeasure=0.9561440955128514, precision=0.9561440955128514, recall=0.956144095512
       val maxTrees = Array(32)
       // evaluating hyper-parameters
       val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(DTreeUtil.
-        multiParamRfCvs(dataTrain, numClasses, catInfo,
-          maxBins, maxDepth, impurities, maxTrees, numFolds))
+        multiParamRfCvs(dataTrain, numClasses, catInfo, maxBins, maxDepth, impurities, maxTrees, numFolds))
       // get best parameters by precision
       val modelParams = evaluations.
         sortBy { case (params, modelMetrics) =>
@@ -709,6 +711,65 @@ testAndMeta.first: LabeledPoint = (1.0,[3250.0,103.0,18.0,300.0,55.0,150.0,247.0
       /*
 fMeasure=0.9568360679441189, precision=0.9568360679441189, recall=0.9568360679441189
        */
+      val rootNodes = modelStack.trees.map{_.topNode}
+      /*
+       modelStack.trees(0).numNodes = 105
+       */
+      val nodeRoot = modelStack.trees(0).topNode
+      /*
+id = 1, isLeaf = false, predict = 1.0 (prob = 0.48701564732411823), impurity = 1.7360444430062776
+, split = Some(Feature = 13, threshold = -1.7976931348623157E308, featureType = Categorical, categories = List(4.0, 1.0))
+, stats = Some(gain = 0.9978037506669467, impurity = 1.7360444430062776, left impurity = 0.2091823431342555, right impurity = 1.2744025879760192)
+       */
+      var nodeParent = nodeRoot.leftNode.get
+      /*
+id = 2, isLeaf = false, predict = 1.0 (prob = 0.9675583614339163), impurity = 0.2091823431342555
+, split = Some(Feature = 12, threshold = -1.7976931348623157E308, featureType = Categorical, categories = List(4.0))
+, stats = Some(gain = 0.20452972192559485, impurity = 0.2091823431342555, left impurity = 0.0, right impurity = 0.004806955651150774)
+       */
+      var nodeLeft = if (!nodeParent.isLeaf) {nodeParent.leftNode.get} else {nodeParent}
+      /*
+id = 4, isLeaf = true, predict = 4.0 (prob = 1.0), impurity = 0.0, split = None, stats = None
+       */
+      var nodeRight = if (!nodeParent.isLeaf) {nodeParent.rightNode.get} else {nodeParent}
+      /*
+id = 5, isLeaf = false, predict = 1.0 (prob = 0.9996537273774442), impurity = 0.004806955651150774
+, split = Some(Feature = 12, threshold = -1.7976931348623157E308, featureType = Categorical, categories = List(1.0))
+, stats = Some(gain = 0.0023935099074746625, impurity = 0.004806955651150774, left impurity = 0.001829786518481671, right impurity = 1.1817135862269055)
+       */
+      nodeParent = nodeLeft  // id=4
+      nodeParent = nodeRight // id=5
+      nodeLeft = if (!nodeParent.isLeaf) {nodeParent.leftNode.get} else {nodeParent}
+      /*
+id = 10, isLeaf = false, predict = 1.0 (prob = 0.9998868754286361), impurity = 0.001829786518481671
+ , split = Some(Feature = 14, threshold = -1.7976931348623157E308, featureType = Categorical, categories = List(2.0, 1.0))
+ , stats = Some(gain = 7.38708585706019E-4, impurity = 0.001829786518481671, left impurity = 9.337396292840691E-4, right impurity = 1.8553885422075338)
+       */
+      nodeRight = if (!nodeParent.isLeaf) {nodeParent.rightNode.get} else {nodeParent}
+      /*
+id = 11, isLeaf = false, predict = 1.0 (prob = 0.5285714285714286), impurity = 1.1817135862269055
+ , split = Some(Feature = 14, threshold = -1.7976931348623157E308, featureType = Categorical, categories = List(0.0))
+ , stats = Some(gain = 0.36846102674432113, impurity = 1.1817135862269055, left impurity = 0.5916727785823275, right impurity = 0.960972413416089)
+       */
+      nodeParent = nodeLeft  // id=10
+      nodeLeft = if (!nodeParent.isLeaf) {nodeParent.leftNode.get} else {nodeParent}
+      /*
+id = 20, isLeaf = false, predict = 1.0 (prob = 0.9999434329149726), impurity = 9.337396292840691E-4
+, split = Some(Feature = 4, threshold = 96.0, featureType = Continuous, categories = List())
+, stats = Some(gain = 6.754531105176417E-5, impurity = 9.337396292840691E-4, left impurity = 6.596931313782946E-4, right impurity = 0.002113734971100895)
+       */
+      nodeRight = if (!nodeParent.isLeaf) {nodeParent.rightNode.get} else {nodeParent}
+      /*
+id = 21, isLeaf = false, predict = 0.0 (prob = 0.3333333333333333), impurity = 1.8553885422075338
+, split = Some(Feature = 8, threshold = 123.0, featureType = Continuous, categories = List())
+, stats = Some(gain = 0.9798687566511526, impurity = 1.8553885422075338, left impurity = 0.7219280948873623, right impurity = 0.9852281360342516)
+       */
+      nodeParent = nodeLeft // id=20
+      nodeLeft = if (!nodeParent.isLeaf) {nodeParent.leftNode.get} else {nodeParent}
+      DTUtil.printNode(nodeLeft) // id=40, feature=0, impurity=0.00066, cond=3017.00000
+      nodeRight = if (!nodeParent.isLeaf) {nodeParent.rightNode.get} else {nodeParent}
+      DTUtil.printNode(nodeRight) // id=41, feature=4, impurity=0.00211, cond=97.00000
+
     }
   }
 
@@ -736,7 +797,7 @@ fMeasure=0.9568360679441189, precision=0.9568360679441189, recall=0.956836067944
      impurity:entropy, depth:30, bins:300
      */
     var model = result.head._1
-    val pw = new PrintWriter(new File("/home/leo/dt.log" ))
+    val pw = new PrintWriter(new File("/home/leoricklin/dataset/covtype/catSimpleRfModel2.log" ))
     pw.write(model.toDebugString)
     pw.close
   }
