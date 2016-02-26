@@ -14,30 +14,6 @@ import scala.collection.immutable.IndexedSeq
  */
 object Statistic {
 
-
-  /**
-   *
-   * @param rdd
-   * @return Statistics, e.g.: mean=[1.2248814820915922E-4], min=[-6.135090144103502], max=[6.32781125594535], var=[1.2098790417283618]
-   */
-  def printStats(rdd:RDD[Vector]) = {
-    val stats = Statistics.colStats(rdd)
-    f"mean=${stats.mean}%s, min=${stats.min}%s, max=${stats.max}%s, var=${stats.variance}%s"
-  }
-
-  def printMatrix(matrix:Matrix) = {
-    val rows = matrix.numRows
-    val cols = matrix.numCols
-    val ary = matrix.toArray
-    val coef: IndexedSeq[Array[Double]] = (0 to rows).
-      map{ idx => ary.slice(idx*cols, (idx*cols)+cols) }
-    val titles: IndexedSeq[String] = (1 to 9).map( id => id.toString() + " "*5 )
-    val out = f"${" "*6}|${titles.mkString("|")}\n" + {
-      for (i <- 0 until titles.size)
-      yield { f"${titles(i)}|${coef(i).map(v => f"${v}%+1.3f").mkString("|")}" }
-    }.mkString("\n")
-    out
-  }
   /**
    * Correlation, refer http://www.real-statistics.com/correlation/multiple-correlation/
    * @param sc
@@ -53,7 +29,7 @@ object Statistic {
       map{ Vectors.dense(_) }
     val res: Matrix = Statistics.corr(vecs, "pearson")
     /*
-    println(printMatrix(res))
+    StatsUtil.println(printMatrix(res))
           |1     |2     |3     |4     |5     |6     |7     |8     |9
     1     |+1.000|+0.564|-0.112|+0.275|-0.428|+0.673|-0.727|+0.281|-0.835
     2     |+0.564|+1.000|-0.381|+0.428|-0.327|+0.562|-0.587|+0.228|-0.489
