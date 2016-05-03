@@ -244,54 +244,6 @@ object DTreeUtil extends Serializable {
     evaluations
   }
 
-  /**
-   *
-   * @param dataTrain
-   * @param numClasses
-   * @param catInfo
-   * @param maxBins
-   * @param maxDepths
-   * @param impurities
-   * @param maxTrees
-   * @param numFolds
-   * @return Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] =
-   *         Array( params: Array(bins, depth, impurityNum, numTrees),
-   *                modelMetrics: Array( (model, Array(fMeasure, precision, recall) ) ) )
-   */
-  def multiParamRfCvs( dataTrain:RDD[LabeledPoint], numClasses: Int, catInfo: Map[Int, Int],
-    maxBins: Array[Int], maxDepths: Array[Int], impurities: Array[Int], maxTrees:Array[Int],
-    numFolds: Int = 3)
-  : Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = {
-    val seed = 1
-    val evaluations = for {
-      impurityNum <- impurities
-      depth <- maxDepths
-      bins <- maxBins
-      numTrees <- maxTrees
-    } yield {
-      val impurity = impurityNum match {
-        case 0 => "gini"
-        case _ => "entropy"
-      }
-      val folds: Array[(RDD[LabeledPoint], RDD[LabeledPoint])] = MLUtils.kFold(dataTrain, numFolds, seed)
-      val modelMetrics = folds.
-        map{ case (training, validation) =>
-        training.cache;validation.cache()
-        // training model
-        println(f"bins=${bins}, depth=${depth}, impurity=${impurity}, trees=${numTrees}, ")
-        val model = TimeEvaluation.time( RandomForest.trainClassifier(training, numClasses, catInfo, numTrees, "auto", impurity, depth, bins, seed) )
-        training.unpersist()
-        // validatiing model
-        val predictLabels = model.predict( validation.map(_.features) ).
-          zip( validation.map(_.label) )
-        validation.unpersist()
-        val metric = new MulticlassMetrics(predictLabels)
-        ( model, Array(metric.fMeasure, metric.precision, metric.recall) ) }
-      ( Array(bins, depth, impurityNum, numTrees), modelMetrics )
-    }
-    evaluations
-  }
-
 
   def spam2Tf(sc:SparkContext, inpath:String, features:Int, lable:Double): RDD[LabeledPoint] = {
     val tf = new HashingTF(numFeatures = features)

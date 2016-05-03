@@ -352,8 +352,8 @@ fMeasure=0.9568360679441189, precision=0.9568360679441189, recall=0.956836067944
       LabeledPoint(tokens.last, Vectors.dense(tokens.init))
     }
     /*
-    dataTrain.count = 290538
-    dataTest.count = 290474
+    dataTrain.count = 290,538
+    dataTest.count = 290,474
 */
     // persist training / testing dataset
     /*
@@ -369,9 +369,9 @@ fMeasure=0.9568360679441189, precision=0.9568360679441189, recall=0.956836067944
     val model1 = {
       val maxTrees = Array(16)
       // evaluating hyper-parameters
-      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(DTreeUtil.
-        multiParamRfCvs(dataTrain, numClasses, catInfo,
-          maxBins, maxDepth, impurities, maxTrees, numFolds))
+      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(
+        DTUtil.multiParamRfCvs(dataTrain, numClasses, catInfo,
+          maxBins, maxDepth, impurities, maxTrees, numFolds) )
       /*
 time: 3,087,401.17096ms
        */
@@ -382,9 +382,9 @@ time: 3,087,401.17096ms
         last
       /*
 (Array(300, 30, 1, 16),Array(
-(TreeEnsembleModel classifier with 16 trees, Array(0.9408548245387358, 0.9408548245387358, 0.9408548245387358)),
-(TreeEnsembleModel classifier with 16 trees ,Array(0.9418153367854312, 0.9418153367854312, 0.9418153367854312)),
-(TreeEnsembleModel classifier with 16 trees ,Array(0.9419992964595361, 0.9419992964595361, 0.9419992964595361))))
+ (TreeEnsembleModel classifier with 16 trees, Array(0.9408548245387358, 0.9408548245387358, 0.9408548245387358)),
+ (TreeEnsembleModel classifier with 16 trees ,Array(0.9418153367854312, 0.9418153367854312, 0.9418153367854312)),
+ (TreeEnsembleModel classifier with 16 trees ,Array(0.9419992964595361, 0.9419992964595361, 0.9419992964595361))))
        */
       // training best model
       dataTrain.cache()
@@ -416,8 +416,8 @@ fMeasure=0.9518270137774809, precision=0.9518270137774809, recall=0.951827013777
     val model2 = {
       val maxTrees = Array(32)
       // evaluating hyper-parameters
-      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(DTreeUtil.
-        multiParamRfCvs(dataTrain, numClasses, catInfo,
+      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(
+        DTUtil.multiParamRfCvs(dataTrain, numClasses, catInfo,
           maxBins, maxDepth, impurities, maxTrees, numFolds))
       /*
 time: 7,766,210.85376ms
@@ -425,9 +425,10 @@ time: 7,766,210.85376ms
       // print out parameters
       evaluations.foreach { case (params, modelMetrics) =>
         val metrics = modelMetrics.map { case (model, metrics) =>
-            metrics.map { metric => f"${metric}%5.5f"}.mkString("(", ",", ")") }.
+            metrics.map { metric => f"${metric}%5.5f" }.mkString("(", ",", ")") }.
           mkString(";")
-        val avgs = modelMetrics.map { case (model, metrics) => metrics}.
+        val avgs = modelMetrics.map { case (model, metrics) =>
+            metrics }.
           reduce{ (ary1, ary2) =>
             Array(ary1(0) + ary2(0), ary1(1) + ary2(1), ary1(2) + ary2(2)) }.
           map { metric => f"${metric / numFolds.toDouble}%5.5f" }.
@@ -501,12 +502,12 @@ fMeasure=0.9561440955128514, precision=0.9561440955128514, recall=0.956144095512
     val model3 = {
       val maxTrees = Array(32)
       // evaluating hyper-parameters
-      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(DTreeUtil.
-        multiParamRfCvs(dataTrain, numClasses, catInfo, maxBins, maxDepth, impurities, maxTrees, numFolds))
+      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(
+        DTUtil.multiParamRfCvs(dataTrain, numClasses, catInfo, maxBins, maxDepth, impurities, maxTrees, numFolds))
       // get best parameters by precision
       val modelParams = evaluations.
         sortBy { case (params, modelMetrics) =>
-        modelMetrics.map { case (model, metrics) => metrics(1)}.max }.
+          modelMetrics.map { case (model, metrics) => metrics(1)}.max }.
         last
       // get best models by precision
       val models: Array[(RandomForestModel, Array[Double])] = evaluations.
@@ -585,8 +586,8 @@ fMeasure=0.9510558604212426, precision=0.9510558604212426, recall=0.951055860421
     val model4 = {
       val maxTrees = Array(32)
       // evaluating hyper-parameters
-      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(DTreeUtil.
-        multiParamRfCvs(dataTrain, numClasses, catInfo,
+      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(
+        DTUtil.multiParamRfCvs(dataTrain, numClasses, catInfo,
           maxBins, maxDepth, impurities, maxTrees, numFolds))
       // get best parameters by precision
       val modelParams = evaluations.
@@ -663,8 +664,8 @@ fMeasure=0.9510937295592721, precision=0.9510937295592721, recall=0.951093729559
     val model5 = {
       val maxTrees = Array(32)
       // evaluating hyper-parameters
-      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(DTreeUtil.
-        multiParamRfCvs(dataTrain, numClasses, catInfo,
+      val evaluations: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = TimeEvaluation.time(
+        DTUtil.multiParamRfCvs(dataTrain, numClasses, catInfo,
           maxBins, maxDepth, impurities, maxTrees, numFolds))
       // get best parameters by precision
       val modelParams: Array[Array[Int]] = evaluations.

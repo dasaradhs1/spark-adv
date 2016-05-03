@@ -69,7 +69,7 @@ object FeatureSelect {
     val cols = 3
     val rows = 30000000L
     val partions = 2
-    val x1: RDD[Vector] = RandomRDDs.normalVectorRDD(sc, rows, cols, partions, 100L)
+    val x: RDD[Vector] = RandomRDDs.normalVectorRDD(sc, rows, cols, partions, 100L)
     /*
     val stats = Statistics.colStats(x1)
     println(f"${stats.mean}%s, ${stats.min}%s, ${stats.max}%s, ${stats.variance}%s")
@@ -79,14 +79,14 @@ object FeatureSelect {
 [0.9999499876078658   ,0.9996836029535467   ,1.0000667261424816]
      */
     // Y1 = X0 + 2*X1 + noise, X0 and X1 are independent
-    val y1: RDD[Double] = x1.zip( RandomRDDs.normalRDD(sc, rows, partions, 200L).map{v => 0 + 1 * v} ).
+    val y1: RDD[Double] = x.zip( RandomRDDs.normalRDD(sc, rows, partions, 200L).map{v => 0 + 1 * v} ).
       map{ case (x, n) => x(0) + 2*x(1) + n }
     /*
     val stats = Statistics.colStats(y1.map{Vectors.dense(_)})
     println(f"${stats.mean}%s, ${stats.min}%s, ${stats.max}%s, ${stats.variance}%s")
 [1.555929093010766E-5], [-14.768514111780256], [14.141883223882898], [5.998153998030806]
      */
-    val dataTrain1: RDD[LabeledPoint] = y1.zip(x1).map{ case (y, x) => new LabeledPoint(y, x)}
+    val dataTrain1: RDD[LabeledPoint] = y1.zip(x).map{ case (y, x) => new LabeledPoint(y, x)}
     dataTrain1.cache()
     val modelLr1 = (new LinearRegressionWithSGD()).run(dataTrain1)
     /*
