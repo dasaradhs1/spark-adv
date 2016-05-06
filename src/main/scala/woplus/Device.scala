@@ -1,17 +1,20 @@
 package woplus
 
 import ch04.DTreeUtil
+import java.io.File
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.tree.model.RandomForestModel
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{SparkContext, SparkConf}
 import org.apache.spark.sql.{Row, DataFrame, SQLContext}
 import scala.collection.immutable.IndexedSeq
 import scala.collection.mutable.ArrayBuffer
-
+import scala.io.Source
 import tw.com.chttl.spark.mllib.util.NAStat
 import tw.com.chttl.spark.mllib.util.DTUtil
+
 
 /**
  * Created by leorick on 2016/4/28.
@@ -19,10 +22,57 @@ import tw.com.chttl.spark.mllib.util.DTUtil
 object Device {
   val appName = "woplus.device"
 
-  case class deviceTag(imsi:String)
-  case class device(month:Int, imsi:String, net:String, gender:String, age:String,
+  case class Imsi(imsi:String)
+
+  def row2Imsi(row:Row): Imsi = {
+    Imsi(row.getString(0))
+  }
+
+  def imsi2Str(imsi:Imsi): String = {
+    imsi.imsi
+  }
+
+  // [0.month: int, 1.imsi: string, 2.net: string, 3.gender: string, 4.age: string,
+  // 5.arpu: string, 6.dev_vendor: string, 7.dev_type: string, 8.bytes: string, 9.voice: int,
+  // 10.sms: int]
+  case class deviceLog(month:Int, imsi:String, net:String, gender:String, age:String,
                     arpu:String, dev_vendor:String, dev_type:String, bytes:String, voice:Int,
                     sms:Int)
+
+  def deviceLog2Str(dev:deviceLog): String = {
+    Array(dev.month.toString, dev.imsi, dev.net, dev.gender, dev.age,
+      dev.arpu, dev.dev_vendor, dev.dev_type, dev.bytes, dev.voice.toString,
+      dev.sms.toString).mkString(",")
+  }
+
+  def row2DeviceLog(row:Row): deviceLog = {
+    deviceLog(row.getInt(0), row.getString(1), row.getString(2), row.getString(3), row.getString(4),
+      row.getString(5), row.getString(6), row.getString(7), row.getString(8), row.getInt(9),
+      row.getInt(10))
+  }
+  
+  def deviceLogs2Vector(sc:SparkContext, devices:RDD[deviceLog], mapping: Map[Int, Map[Int, Int]])
+  : RDD[(String, Vector)] = {
+    val valMapping = sc.broadcast(mapping).value
+    devices.mapPartitions{ ite =>
+      ite.map{ device => (device.imsi, Vectors.dense(
+        valMapping(2)(device.net.hashCode).toDouble,
+        valMapping(3)(device.gender.hashCode).toDouble,
+        valMapping(4)(device.age.hashCode).toDouble,
+        valMapping(5)(device.arpu.hashCode).toDouble,
+        valMapping(8)(device.bytes.hashCode).toDouble,
+        device.voice.toDouble,
+        device.sms.toDouble)) }
+    }
+  }
+
+  /*
+    def rowDeviceToString(row:Row): String = {
+      f"[${row.getInt(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}]" +
+        f"[${row.getString(5)}][${row.getString(6)}][${row.getString(7)}][${row.getString(8)}][${row.getInt(9)}]" +
+        f"[${row.getInt(10)}]"
+    }
+  */
 
   def bytes2hex(bytes: Array[Byte], sep: Option[String] = None): String = {
     sep match {
@@ -31,15 +81,15 @@ object Device {
     }
   }
 
-  def loadDeviceLog(sc:SparkContext, path:String): RDD[String] = {
+  def loadDeviceLogSrc(sc:SparkContext, path:String): RDD[String] = {
      sc.textFile(path)
   }
 
-  def loadTargetDevice(sc:SparkContext, sqlContext:SQLContext, path:String): RDD[String] = {
+  def loadImsiTargetSrc(sc:SparkContext, path:String): RDD[String] = {
     sc.textFile(path)
   }
 
-  def splitDeviceLog(srcDevice:RDD[String]): RDD[Array[String]] = {
+  def splitDeviceLogSrc(srcDevice:RDD[String]): RDD[Array[String]] = {
     /* 分隔格式錯誤
     val tokDevice = srcDevice.map{_.split(",")}.
       filter{ case toks => !toks(1).contains("IMSI") }.
@@ -52,13 +102,13 @@ object Device {
       filter{ case toks => !toks(1).contains("IMSI") }
   }
 
-  def tok2DeviceLog(tokens:RDD[Array[String]]): RDD[device] = {
-    tokens.map{ ary => device(ary(0).replaceAll(""""""","").toInt, ary(1), ary(2), ary(3), ary(4),
+  def tok2DeviceLog(tokens:RDD[Array[String]]): RDD[deviceLog] = {
+    tokens.map{ ary => deviceLog(ary(0).replaceAll(""""""","").toInt, ary(1), ary(2), ary(3), ary(4),
       ary(5), ary(6), ary(7), ary(8), ary(9).replaceAll(""""""","").toInt, ary(10).replaceAll(""""""","").toInt) }
   }
 
-  def tok2DeviceTarget(tokens:RDD[String]): RDD[deviceTag] = {
-    tokens.map{ line => deviceTag(line) }
+  def tok2ImsiTarget(tokens:RDD[String]): RDD[Imsi] = {
+    tokens.map{ line => Imsi(line) }
   }
 
   /**
@@ -116,41 +166,62 @@ object Device {
       dataset.mkString(";") //  = 2;3;4;5;6;7;8;10;11;12
    */
 
-  def deviceLabel2LP(sc:SparkContext, dataset:DataFrame, mapping: Map[Int, Map[Int, Int]]): RDD[LabeledPoint] = {
+  /**
+   *
+   * @param sc
+   * @param dataset
+   * @param mapping
+   * @return
+   *   features: 0.net_mapping,   1.gender_mapping, 2.age_mapping, 3.arpu_mapping, 4.dev_vendor_mapping,
+   *             5.bytes_mapping, 6.voice_mapping,  7.sms_mapping
+   */
+  def prev1MDeviceLabel2LP(sc:SparkContext, dataset:DataFrame, mapping: Map[Int, Map[Int, Int]]): RDD[LabeledPoint] = {
     val valMapping = sc.broadcast(mapping).value
+    dataset.mapPartitions{ ite =>
+      ite.map{ row =>
+        new LabeledPoint(row.getInt(11).toDouble,
+          Vectors.dense(
+            valMapping(2)(row.getString(2).hashCode).toDouble,
+            valMapping(3)(row.getString(3).hashCode).toDouble,
+            valMapping(4)(row.getString(4).hashCode).toDouble,
+            valMapping(5)(row.getString(5).hashCode).toDouble,
+            valMapping(6)(row.getString(6).hashCode).toDouble,
+            valMapping(8)(row.getString(8).hashCode).toDouble,
+            row.getInt(9).toDouble,
+            row.getInt(10).toDouble)) } }
+  }
+
+  def saveDiffDeviceImsi(sc:SparkContext, diffDevImsis:DataFrame, path:String): Unit = {
     /*
-    dataset.mapPartitions{ ite =>
-      ite.map{ row =>
-        new LabeledPoint(row.getInt(11).toDouble,
-          Vectors.dense( valMapping(2)(row.getString(2).hashCode).toDouble,
-            valMapping(3)(row.getString(3).hashCode).toDouble,
-            valMapping(4)(row.getString(4).hashCode).toDouble,
-            valMapping(5)(row.getString(5).hashCode).toDouble,
-            valMapping(6)(row.getString(6).hashCode).toDouble,
-            valMapping(7)(row.getString(7).hashCode).toDouble,
-            valMapping(8)(row.getString(8).hashCode).toDouble,
-            row.getInt(9).toDouble,
-            row.getInt(10).toDouble)) } }
+    diffDevImsis.foreach{ case (idx, df) =>
+      df.coalesce(4).write.json(f"${path}/${idx}%02d") }
      */
-    dataset.mapPartitions{ ite =>
-      ite.map{ row =>
-        new LabeledPoint(row.getInt(11).toDouble,
-          Vectors.dense( valMapping(2)(row.getString(2).hashCode).toDouble,
-            valMapping(3)(row.getString(3).hashCode).toDouble,
-            valMapping(4)(row.getString(4).hashCode).toDouble,
-            valMapping(5)(row.getString(5).hashCode).toDouble,
-            valMapping(6)(row.getString(6).hashCode).toDouble,
-            valMapping(8)(row.getString(8).hashCode).toDouble,
-            row.getInt(9).toDouble,
-            row.getInt(10).toDouble)) } }
+    import java.io._
+    val file = new File(path)
+    val bw = new BufferedWriter(new FileWriter(file))
+    bw.write( diffDevImsis.select("imsi").collect().map{ row => row.getString(0) }.mkString("\n") )
+    bw.close()
   }
 
-  def rowDeviceToString(row:Row) = {
-    f"[${row.getInt(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}]" +
-    f"[${row.getString(5)}][${row.getString(6)}][${row.getString(7)}][${row.getString(8)}][${row.getInt(9)}]" +
-    f"[${row.getInt(10)}]"
+  def loadDiffDeviceImsi(sc:SparkContext, sqlContext:SQLContext , path:String): Array[(Int, DataFrame)] = {
+    /*
+    sqlContext.read.json(path)
+     */
+    // path = "/home/leoricklin/dataset/woplus/device.diff.imsi"
+    import sqlContext.implicits._
+    new File(path).listFiles().filter(_.isFile).map{ file =>
+      ( file.getName.toInt,
+        sc.parallelize(
+          Source.fromFile(file.getAbsolutePath).getLines().toSeq.map{line => Imsi(line)} ).toDF() ) }
   }
 
+  def saveMapping(sc:SparkContext, mapping:Map[Int,Int], path:String, name:String) = {
+    import java.io._
+    val file = new File(f"${path}/${name}")
+    val bw = new BufferedWriter(new FileWriter(file))
+    bw.write( mapping.toArray.map{ case (code, idx) => f"${code},${idx}" }.mkString("\n") )
+    bw.close()
+  }
 
   def main(args: Array[String]) {
     val sparkConf = new SparkConf().setAppName(appName)
@@ -168,14 +239,11 @@ object Device {
     // 需要预测的IMSI
     var path = "file:///home/leoricklin/dataset/woplus/target/"
     // path = "file:///home/leo/woplus/target/"
-    val deviceTags = tok2DeviceTarget(loadTargetDevice(sc, sqlContext, path)).
-      toDF().cache() // : DataFrame = [imsi: string]
-    deviceTags.registerTempTable("devicetag")
+    val deviceTags = tok2ImsiTarget(loadImsiTargetSrc(sc, path)).cache()
+    deviceTags.getStorageLevel.useMemory
+    deviceTags.toDF().registerTempTable("devicetag")
     var df = sqlContext.sql("select count(1) from devicetag")
     var result = df.collect()
-    /*
-    result.foreach{ row => println(row.get(0)) } // 360698
-     */
     /*
     println(f"#rows=${srcDeviceTag.count}") // = 360698
     println(f"distinct #rows=${srcDeviceTag.distinct.count}") // = 360698
@@ -188,7 +256,7 @@ d022fc28d9bce0fae7d57831f3501260
      */
     // 讀取完整資料
     path = "file:///home/leoricklin/dataset/woplus/device/"
-    val deviceLogAll = tok2DeviceLog( splitDeviceLog( loadDeviceLog(sc, path) )).toDF().cache()
+    val deviceLogAll = tok2DeviceLog( splitDeviceLogSrc( loadDeviceLogSrc(sc, path) )).toDF().cache()
     /*
     deviceLogAll.take(5).map{ (row) => rowDeviceToString(row) }.mkString("\n")
 [201504][ef6edca386039fa78789676a839eb373][3G][��][18-22][150-199][Xiaomi][Redmi 1S][1500-1999][398][62]
@@ -268,7 +336,7 @@ Array(stats: (count: 6000000, mean: 267.869260, stdev: 416.809862, max: 20078.00
      */
     // 建立屬性對應表
     result = deviceLogAll.select($"net").distinct().collect()
-    val netMap = result.map{ row => row.getString(0).hashCode }.zipWithIndex.toMap
+    val netMap: Map[Int, Int] = result.map{ row => row.getString(0).hashCode }.zipWithIndex.toMap
     /*
     result.foreach{ row =>
       val value = row.getString(0)
@@ -372,72 +440,95 @@ Map(0 -> 11, -674939055 -> 0, -1355057007 -> 2, 1132485617 -> 3, 45721399 -> 6, 
     //
     deviceLogAll.unpersist(true)
     // 分析 11/12月
-    path = "file:///w.data/WORKSPACE.2/dataset/woplus/device/201511.csv"
-    val device11 = tok2DeviceLog(splitDeviceLog(loadDeviceLog(sc, path))).
-      toDF() // : DataFrame =
-    // [0.month: int, 1.imsi: string, 2.net: string, 3.gender: string, 4.age: string,
-    // 5.arpu: string, 6.dev_vendor: string, 7.dev_type: string, 8.bytes: string, 9.voice: int,
-    // 10.sms: int]
-    device11.registerTempTable("device11")
-    /*
-    df = sqlContext.sql("select count(1) from device11")
-    result = df.collect()
-    result.foreach{ row => println(row.get(0)) } // = 500000
-     */
-    path = "file:///w.data/WORKSPACE.2/dataset/woplus/device/201512.csv"
-    val device12 = tok2DeviceLog( splitDeviceLog( loadDeviceLog(sc, path))).
-      toDF()
-    device12.registerTempTable("device12")
-    /*
-    df = sqlContext.sql("select count(1) from device12")
-    result = df.collect()
-    result.foreach{ row => println(row.get(0)) } // = 500000
-     */
-    df = sqlContext.sql("select a.imsi, b.dev_vendor as n_vendor, b.dev_type as n_type, c.dev_vendor as b_vendor, c.dev_type as b_type from devicetag a left join device12 b on a.imsi=b.imsi left join device11 c on a.imsi = c.imsi")
-    /*
-    : DataFrame = [imsi: string, n_vendor: string, n_type: string, b_vendor: string, b_type: string]
-    df.count() // 360698
-    result = df.take(5)
-    result.foreach{ row =>
-      val flag = row.getString(1).equals(row.getString(3)) && row.getString(2).equals(row.getString(4))
-      println(f"[${row.getString(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}][${flag}]") }
-[00085b5c30ec953e28e18820646d0f66][����][M460][����][M460][true]
-[004c6d0c7a83b1a07339e8e5e4bee881][��Ϊ][HUAWEI P6-C00][��Ϊ][HUAWEI P6-C00][true]
-[0051c5a9851964842546a77c4911eaa2][ƻ��][A1325][ƻ��][A1325][true]
-[0060de21cbd915f9f792de90130e3050][΢��][Nokia 501][ŵ����][Nokia 501][false]
-[0065a1268ab2e710fbf73d896b0aa64d][���][PI39200][���][PI39200][true]
-     */
-    df.registerTempTable("devtag1112")
-    df = sqlContext.sql("select * from devtag1112 where n_vendor <> b_vendor and n_type <> b_type")
-    /*
-    : DataFrame = [imsi: string, n_vendor: string, n_type: string, b_vendor: string, b_type: string]
-    diff1112.count() // 15143
-    result = diff1112.take(5)
-    result.foreach{ row =>
-      val flag = row.getString(1).equals(row.getString(3)) && row.getString(2).equals(row.getString(4))
-      println(f"[${row.getString(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}][${flag}]") }
-[012fc2e11d3b434a9f0e47c694a0c36d][΢��][Nokia 1050][С��][2012061][false]
-[0570a49afa3e741766d65c09444e82ab][�Ѷ][C520Lw][ƻ��][A1524][false]
-[07273f7a228768e8d2e6f79ce641ff1b][Ŭ����][NX511J][ƻ��][A1524][false]
-[09a1f55c05f003338386daf747f9345e][С��][2013122][����][ZTE V987][false]
-[0b8b59ba27c0843a4367e6e12ad3cf8e][��Ϊ][HUAWEI RIO-AL00][����][GT-I9152][false]
-     */
+    val analy1112 = {
+      path = "file:///w.data/WORKSPACE.2/dataset/woplus/device/201511.csv"
+      val device11 = tok2DeviceLog(splitDeviceLogSrc(loadDeviceLogSrc(sc, path))) // : DataFrame =
+      device11.toDF().registerTempTable("device11")
+      /*
+      df = sqlContext.sql("select count(1) from device11")
+      result = df.collect()
+      result.foreach{ row => println(row.get(0)) } // = 500000
+       */
+      // path = "file:///w.data/WORKSPACE.2/dataset/woplus/device/201512.csv"
+      path = "file:///home/leoricklin/dataset/woplus/device/201512.csv"
+      val device12 = tok2DeviceLog( splitDeviceLogSrc( loadDeviceLogSrc(sc, path))).cache()
+      device12.toDF().registerTempTable("device12")
+      device12.getStorageLevel.useMemory
+      /*
+      df = sqlContext.sql("select * from device12 limit 5")
+      result = df.collect()
+      println(result.map{ row => device2Str(row2Device(row)) }.mkString("\n"))
+201512,89b4ad5cd0d3cdeac177ca0bd2170786,3G,ï¿½ï¿½,30-39,50-99,ï¿½ï¿½ï¿½ï¿½,Coolpad T2-W01,0-499,494,93
+201512,795dc714d902acf9830f34ed2bcd1054,3G,ï¿½ï¿½,30-39,0-49,ï¿½ï¿½Îª,Che1-CL10,0-499,476,1
+201512,8ae17bd692cb4dd11d768d2ae1b10fa7,3G,ï¿½ï¿½,60ï¿½ï¿½ï¿½ï¿½,150-199,Æ»ï¿½ï¿½,A1431,0-499,1601,87
+201512,ad4a0e92fb31bbb3c797fb4c3b6bc9a2,3G,ï¿½ï¿½,40-49,300ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½,ï¿½ï¿½Îª,H60-L02,0-499,4,2
+201512,0664611530f4443654c87abac1c49169,3G,ï¿½ï¿½,40-49,300ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½,Æ»ï¿½ï¿½,A1528,1000-1499,927,176
+       */
+      df = sqlContext.sql("select a.imsi, b.dev_vendor as n_vendor, b.dev_type as n_type, c.dev_vendor as b_vendor, c.dev_type as b_type from devicetag a left join device12 b on a.imsi=b.imsi left join device11 c on a.imsi = c.imsi")
+      /*
+      : DataFrame = [imsi: string, n_vendor: string, n_type: string, b_vendor: string, b_type: string]
+      df.count() // 360698
+      result = df.take(5)
+      result.foreach{ row =>
+        val flag = row.getString(1).equals(row.getString(3)) && row.getString(2).equals(row.getString(4))
+        println(f"[${row.getString(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}][${flag}]") }
+  [00085b5c30ec953e28e18820646d0f66][����][M460][����][M460][true]
+  [004c6d0c7a83b1a07339e8e5e4bee881][��Ϊ][HUAWEI P6-C00][��Ϊ][HUAWEI P6-C00][true]
+  [0051c5a9851964842546a77c4911eaa2][ƻ��][A1325][ƻ��][A1325][true]
+  [0060de21cbd915f9f792de90130e3050][΢��][Nokia 501][ŵ����][Nokia 501][false]
+  [0065a1268ab2e710fbf73d896b0aa64d][���][PI39200][���][PI39200][true]
+       */
+      df.registerTempTable("devtag1112")
+      df = sqlContext.sql("select * from devtag1112 where n_vendor <> b_vendor and n_type <> b_type")
+      /*
+      : DataFrame = [imsi: string, n_vendor: string, n_type: string, b_vendor: string, b_type: string]
+      diff1112.count() // 15143
+      result = diff1112.take(5)
+      result.foreach{ row =>
+        val flag = row.getString(1).equals(row.getString(3)) && row.getString(2).equals(row.getString(4))
+        println(f"[${row.getString(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}][${flag}]") }
+  [012fc2e11d3b434a9f0e47c694a0c36d][΢��][Nokia 1050][С��][2012061][false]
+  [0570a49afa3e741766d65c09444e82ab][�Ѷ][C520Lw][ƻ��][A1524][false]
+  [07273f7a228768e8d2e6f79ce641ff1b][Ŭ����][NX511J][ƻ��][A1524][false]
+  [09a1f55c05f003338386daf747f9345e][С��][2013122][����][ZTE V987][false]
+  [0b8b59ba27c0843a4367e6e12ad3cf8e][��Ϊ][HUAWEI RIO-AL00][����][GT-I9152][false]
+       */
+    }
     // 讀取各月檔案並轉為DF
     val deviceLogEachMonth: IndexedSeq[(Int, DataFrame)] = (1 to 12).map{ idx =>
       // path = f"file:///w.data/WORKSPACE.2/dataset/woplus/device/2015${idx}%02d.csv"
       path = f"file:///home/leoricklin/dataset/woplus/device/2015${idx}%02d.csv"
-      val df = tok2DeviceLog( splitDeviceLog( loadDeviceLog(sc, path))).toDF()
+      val df = tok2DeviceLog( splitDeviceLogSrc( loadDeviceLogSrc(sc, path))).toDF()
       df.registerTempTable(f"device${idx}%02d")
       (idx, df) } // : IndexedSeq[(月份:Int, 行為紀錄:DataFrame)
     // 從12月開始, 找出當月與上個月手機不同的用戶
     val diffDeviceImsis = findDiffDev(sqlContext, deviceLogEachMonth)
-    // 儲存, coalesce(3) => job failed
     /*
-    diffDeviceImsis.foreach{ case (idx, df) =>
-      // path = f"file:///w.data/WORKSPACE.2/dataset/woplus/device.diff.imsi/2015${idx}%02d.json"
-      path = f"file:///home/leoricklin/dataset/woplus/device.diff.imsi/2015${idx}%02d.json"
-      df.coalesce(4).write.json(path) }
+    diffDeviceImsis.map{ case (idx, df) => f"[${idx}%02d]${df.count}" }.mkString("\n")
+[02]22027
+[03]21892
+[04]18105
+[05]19652
+[06]20207
+[07]18841
+[08]18750
+[10]17591
+[11]34139
+[12]15143
+    diffDeviceImsis.filter{ case (idx, df) => idx == 12}.head._2.
+      select("*").limit(5).collect().map{ case row =>
+        Array(row.getString(0),row.getString(1),row.getString(2),row.getString(3),row.getString(4)).mkString(",") }.
+      mkString("\n")
+00a50417a50980b4aff0905c95e8d5a6,Nokia,C1-00,Samsung,GT-E1200M
+00e6ed831b497850de796afb17a98c8f,Lenovo,A680/A880,Coolpad,Coolpad W706+
+0103999650d29c4cad91dd4549f7df4c,HUAWEI,Y210-0010,KNIGHT,ZX338
+01b5018b0be70c4eae46ed00eef0fa96,HUAWEI,Honor 6,Xiaomi,MI 2
+02e391138c1750d590455e98a50edc55,Apple,iPhone 4S,Samsung,GT-N7108
      */
+    // 儲存, coalesce(3) => job failed
+    path = "/home/leoricklin/dataset/woplus/device.diff.imsi"
+    diffDeviceImsis.foreach { case (idx, df) =>
+      saveDiffDeviceImsi(sc, df, f"${path}/${idx}%02d") }
     /*
     diffDevices.filter{ case (idx, df) => idx==12}.
       map{ case (idx, df) =>
@@ -452,6 +543,21 @@ Map(0 -> 11, -674939055 -> 0, -1355057007 -> 2, 1132485617 -> 3, 45721399 -> 6, 
         println(idx)
         println(df.get.sample(false, 0.1).take(5).map{ row => f"[${row.getString(0)}][${row.getString(1)}][${row.getString(2)}][${row.getString(3)}][${row.getString(4)}]" }.mkString("\n"))
       } } }
+     */
+    // 載入
+    val newdiffDeviceImsis = loadDiffDeviceImsi(sc, sqlContext, path)
+    /*
+    println(newdiffDeviceImsis.map{ case (idx, df) => f"[${idx}%02d]${df.count()}" }.mkString("\n"))
+[05]19652
+[10]17591
+[04]18105
+[06]20207
+[03]21892
+[11]34139
+[08]18750
+[02]22027
+[12]15143
+[07]18841
      */
     // 準備模型 dataset
     val datasets = prev1MDeviceLabel(sqlContext, diffDeviceImsis)
@@ -568,16 +674,15 @@ bytes:
 [12][4000-4499;1500-1999;2000-2499;3000-3499;500-999;4500-4999;0-499;1000-1499;5000����;2500-2999;3500-3999]
      */
     // 建立 labeledpoint
-    val lps = deviceLabel2LP(sc, unionDFs(datasets), mapping).cache()
+    val lps = prev1MDeviceLabel2LP(sc, unionDFs(datasets), mapping).cache()
     /*
-    lps.take(5).map{lp => println(f"[${lp.label}][${lp.features.size}}][${lp.features.toArray.mkString(",")}}]")}
-[0.0][9}][1621.0,2097056.0,4.8574422E7,1474882.0,2.141820391E9,8.0188368E7,4.5721399E7,0.0,0.0}]
-[0.0][9}][1621.0,366.0,4.8574422E7,1474882.0,7.5447618E7,68034.0,4.5721399E7,666.0,0.0}]
-[0.0][9}][1652.0,2097056.0,-6.87296262E8,1474882.0,6.3476538E7,1.814278212E9,4.5721399E7,278.0,0.0}]
-[0.0][9}][1621.0,2097056.0,4.8574422E7,5.042165E7,7.5447618E7,-6.29717983E8,4.5721399E7,116.0,0.0}]
-[0.0][9}][1621.0,366.0,-6.87296262E8,1474882.0,71863.0,1.181873063E9,4.5721399E7,55.0,16.0}]
+    lps.take(5).map{lp => println(f"[${lp.label}][${lp.features.size}][${lp.features.toArray.mkString(",")}]")}
+[0.0][8][0.0,0.0,6.0,6.0,1289.0,6.0,0.0,0.0]
+[0.0][8][0.0,1.0,6.0,6.0,1228.0,6.0,666.0,0.0]
+[0.0][8][1.0,0.0,3.0,6.0,493.0,6.0,278.0,0.0]
+[0.0][8][0.0,0.0,6.0,4.0,1228.0,6.0,116.0,0.0]
+[0.0][8][0.0,1.0,3.0,6.0,202.0,6.0,55.0,16.0]
      */
-    // 驗證
     NAStat.statsWithMissing( lps.map{ lp => new ArrayBuffer[Double]().+=(lp.label).++=(lp.features.toArray).toArray } ).
       foreach(it => println(it))
     /*
@@ -603,6 +708,28 @@ byte:   stats: (count: 3606980, mean: 5.858392, stdev: 0.713862, max: 10.000000,
 stats: (count: 3606980, mean: 267.962409, stdev: 413.240798, max: 17420.000000, min: 0.000000), NaN: 0
 stats: (count: 3606980, mean: 17.260870, stdev: 57.879806, max: 16055.000000, min: 0.000000), NaN: 0
      */
+    // features: net, gender, age, arpu, dev_vendor, bytes, voice, sms
+    val newlps: RDD[LabeledPoint] = lps.
+      map{ lp =>
+        val features = lp.features.toArray
+        new LabeledPoint(lp.label,
+          Vectors.dense(
+            features(0), features(1),features(2),features(3),features(5),features(6),features(7))) }.
+      cache
+    newlps.first().features.size // 7
+    NAStat.statsWithMissing( newlps.map{ lp => new ArrayBuffer[Double]().+=(lp.label).++=(lp.features.toArray).toArray } ).
+      foreach(it => println(it))
+    /*
+stats: (count: 3606980, mean: 0.057208, stdev: 0.232239, max: 1.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 0.376015, stdev: 0.484384, max: 1.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 0.283296, stdev: 0.491824, max: 2.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 4.245268, stdev: 2.230167, max: 8.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 4.796174, stdev: 1.907042, max: 7.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 5.858392, stdev: 0.713862, max: 10.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 267.962409, stdev: 413.240798, max: 17420.000000, min: 0.000000), NaN: 0
+stats: (count: 3606980, mean: 17.260870, stdev: 57.879806, max: 16055.000000, min: 0.000000), NaN: 0
+    newlps.take(5).map{lp => println(f"[${lp.label}][${lp.features.size}][${lp.features.toArray.mkString(",")}]")}
+     */
     // fit model
     val numClasses = 2
     /*
@@ -614,21 +741,75 @@ stats: (count: 3606980, mean: 17.260870, stdev: 57.879806, max: 16055.000000, mi
       7->27397, // dev_type
       8->11) // bytes
      */
-    val catInfo = Map(0->2, // net
+    val catInfo = Map(
+      0->2, // net
       1->3, // gender
       2->9, // age
       3->8, // arpu
-      4->1756, // dev_vendor
-      5->11) // bytes
-    val maxBins = Array(1800)
+      4->11) // bytes
+    val maxBins = Array(50)
     val maxDepth = Array(30)
     val impurities = Array(1)
     val maxTrees = Array(32)
     val numFolds = 3
     val seed = 1
-    DTUtil.multiParamRfCvs(lps, numClasses, catInfo, maxBins, maxDepth, impurities, maxTrees, numFolds)
-    //
+    val cvModels: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])] = DTUtil.multiParamRfCvs(newlps, numClasses, catInfo, maxBins, maxDepth, impurities, maxTrees, numFolds)
+    /*
+    1.0047646157836E7ms
+: Array[(Array[Int], Array[(RandomForestModel, Array[Double])])]
+= Array((Array(50, 30, 1, 32),Array(
+  (TreeEnsembleModel classifier with 32 trees, Array(0.942779316482438, 0.942779316482438, 0.942779316482438)),
+  (TreeEnsembleModel classifier with 32 trees, Array(0.9424896684170594, 0.9424896684170594, 0.9424896684170594)),
+  (TreeEnsembleModel classifier with 32 trees ,Array(0.9429902582240717, 0.9429902582240717, 0.9429902582240717)))))
+     */
+    // 儲存模型
+    cvModels.head._2.zipWithIndex.map(_.swap).foreach{ case (idx, (model, evals)) =>
+      path = f"file:///home/leoricklin/dataset/woplus/device.rfmodel.${idx}%02d"
+      model.save(sc, path) }
+    // 預測12月用戶
+    path = "file:///home/leoricklin/dataset/woplus/device/201512.csv"
+    val device12 = tok2DeviceLog( splitDeviceLogSrc( loadDeviceLogSrc(sc, path))).cache()
+    device12.toDF().registerTempTable("device12")
+    device12.getStorageLevel.useMemory
+    df = sqlContext.sql("select * from device12 limit 5") // = [month: int, imsi: string, net: string, gender: string, age: string, arpu: string, dev_vendor: string, dev_type: string, bytes: string, voice: int, sms: int]
+    result = df.collect()
+    println(result.map{ row => deviceLog2Str(row2DeviceLog(row)) }.mkString("\n"))
+    /*
+201512,89b4ad5cd0d3cdeac177ca0bd2170786,3G,ï¿½ï¿½,30-39,50-99,ï¿½ï¿½ï¿½ï¿½,Coolpad T2-W01,0-499,494,93
+201512,795dc714d902acf9830f34ed2bcd1054,3G,ï¿½ï¿½,30-39,0-49,ï¿½ï¿½Îª,Che1-CL10,0-499,476,1
+201512,8ae17bd692cb4dd11d768d2ae1b10fa7,3G,ï¿½ï¿½,60ï¿½ï¿½ï¿½ï¿½,150-199,Æ»ï¿½ï¿½,A1431,0-499,1601,87
+201512,ad4a0e92fb31bbb3c797fb4c3b6bc9a2,3G,ï¿½ï¿½,40-49,300ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½,ï¿½ï¿½Îª,H60-L02,0-499,4,2
+201512,0664611530f4443654c87abac1c49169,3G,ï¿½ï¿½,40-49,300ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½,Æ»ï¿½ï¿½,A1528,1000-1499,927,176
+     */
+    deviceTags.getStorageLevel.useMemory
+    deviceTags.toDF().registerTempTable("devicetag")
+    df = sqlContext.sql("select * from devicetag limit 5") // = [imsi: string]
+    result = df.collect()
+    println(result.map{ row => imsi2Str(row2Imsi(row)) }.mkString("\n"))
+    val deviceTag12Log: RDD[deviceLog] = sqlContext.
+      sql("select dev.* from devicetag tag" +
+        " inner join device12 dev" +
+        " on tag.imsi = dev.imsi").
+      map{ row => row2DeviceLog(row) }
 
+    val deiveTag12Vecs: RDD[(String, Vector)] = deviceLogs2Vector(sc, deviceTag12Log, mapping)
+    deiveTag12Vecs.first._2.size // = 7
+    deiveTag12Vecs.cache
+    val model: RandomForestModel = sc.broadcast(cvModels.head._2.head._1).value
+    val deiveTag12Pred: RDD[(String, Vector, Double)] = model.predict{ deiveTag12Vecs.map{ case (imsi, vec) => vec} }.zip(deiveTag12Vecs).
+      map{ case (pred, (imsi, vec)) => (imsi, vec, pred) }
+    deiveTag12Pred.count() //  = 360698
+    //
+    path = "/home/leoricklin/dataset/woplus/device.predict/predict.csv"
+    import java.io._
+    val file = new File(path)
+    val bw = new BufferedWriter(new FileWriter(file))
+    bw.write( deiveTag12Pred.map{ case (imsi, vec, pred) => f"${imsi},${pred}" }.collect().mkString("\n") )
+    bw.close()
+
+
+
+    //
     deviceTags.unpersist(true)
   }
 }

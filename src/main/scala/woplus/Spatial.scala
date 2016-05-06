@@ -3,7 +3,7 @@ package woplus
 import org.apache.spark.mllib.clustering.{KMeansModel, KMeans}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.{Row,SQLContext}
 import org.apache.spark.{SparkContext, SparkConf}
 import scala.collection.immutable.IndexedSeq
 import scala.collection.{immutable, Map}
@@ -15,14 +15,26 @@ import scala.collection.mutable.ArrayBuffer
 object Spatial {
   val appName = "woplus.spatial"
 
-  case class spatialDetail(imei:String, date:String, hour:Int, x:Double, y:Double, areaid:Int, clusterid:Int)
+  case class spatialDetail(imei:String, date:String, hour:Int, x:Double, y:Double,
+                           areaid:Int, clusterid:Int)
 
-  def spatialDetail2String(record:spatialDetail): String = {
+  def spatialDetail2Str(record:spatialDetail): String = {
     Array(record.imei, record.date, record.hour.toString,record.x.toString,record.y.toString,record.areaid.toString,record.clusterid.toString).
       mkString(",")
   }
 
-  def loadSpatial(sc:SparkContext, path:String): RDD[String] = {
+  def str2spatialDetail(line:String): spatialDetail = {
+    val toks = line.split(""",""")
+    spatialDetail(toks(0), toks(1), toks(2).toInt, toks(3).toDouble, toks(4).toDouble,
+      toks(5).toInt, toks(6).toInt)
+  }
+
+  def row2spatialDetail(row:Row): spatialDetail = {
+    spatialDetail(row.getString(0),row.getString(1),row.getInt(2),row.getDouble(3),row.getDouble(4),
+      row.getInt(5),row.getInt(6))
+  }
+
+  def loadSpatialSrc(sc:SparkContext, path:String): RDD[String] = {
     sc.textFile(path)
   }
 
@@ -54,7 +66,7 @@ object Spatial {
    * @return RDD[(imei:String, date:String, hour:Int, gpsXY:Vector)]
    *   e.g.: 4b6b6fc4af31748d3b9f13781fe86503,20160103,20,[120.9150694,31.1202111]
    */
-  def spatialTok2Detail(spatial:RDD[ArrayBuffer[String]]): RDD[(String, String, Int, Vector)] = {
+  def tok2Detail(spatial:RDD[ArrayBuffer[String]]): RDD[(String, String, Int, Vector)] = {
     spatial.flatMap{ ary =>
       val date = ary(0)
       val imei = ary(1)
@@ -78,7 +90,7 @@ object Spatial {
 
   def loadKModel(sc:SparkContext, path:String): KMeansModel = {
     import scala.io.Source
-    val vecs = Source.
+    val vecs: Array[Vector] = Source.
       fromFile(path).
       getLines.toArray.
       map{ line => line.split(""",""") }.
@@ -86,26 +98,32 @@ object Spatial {
     new KMeansModel( vecs )
   }
 
-  def saveSpatialDetail(sc:SparkContext, details: RDD[(String, String, Int, Vector, Int, Int)], path:String) = {
+  def saveSpatialDetail(sc:SparkContext, details: RDD[spatialDetail], path:String) = {
     import java.io._
     val file = new File(path)
     val bw = new BufferedWriter(new FileWriter(file))
     bw.write( details.
-      map{ case (imei, date, hour, vec, areaid, clusterid) =>
-        Array(imei,date,hour.toString,vec.toArray.mkString(","),areaid.toString,clusterid.toString).
-          mkString(",") }.
+      map{ spatialDetail => spatialDetail2Str(spatialDetail) }.
       collect().
       mkString("\n") )
     bw.close()
   }
 
+  def loadSpatialDetail(sc:SparkContext, path:String): RDD[spatialDetail] = {
+    // sc.textFile(path).map{ line => str2spatialDetail(line) }
+    import scala.io.Source
+    sc.parallelize(Source.fromFile(path).getLines.toArray.map{ line => str2spatialDetail(line)})
+  }
+
   def main(args: Array[String]) {
     val sparkConf = new SparkConf().setAppName(appName)
     val sc = new SparkContext(sparkConf)
+    val sqlContext = new SQLContext(sc)
+    import sqlContext.implicits._
     // 讀取完整資料
     var path = "file:///home/leoricklin/dataset/woplus/spatial/"
     // "file:///w.data/WORKSPACE.2/dataset/woplus/spatial"
-    val srcSpatial = loadSpatial(sc, path)
+    val srcSpatial = loadSpatialSrc(sc, path)
     /*
     srcSpatial.take(5).foreach(println)
 20160105,ff7cfb0e717cc3a48af443209168ef92,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.29018,31.32896001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,,,,,,,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001,121.2839,31.34085001
@@ -135,7 +153,7 @@ Array(20160101, 643ce169d1f041f9312d27bc7a61fb61, 121.47533, 31.25294001)
        srcSpatial.filter( toks => toks.size == 50 ).map{ toks => Array(toks.size.toDouble)} )
      // Array(stats: (count: 2437419, mean: 50.000000, stdev: 0.000000, max: 50.000000, min: 50.000000), NaN: 0)
      */
-    // 分隔GPS紀錄, 轉成 vectors
+    // 分隔GPS紀錄
     val spatialToks = splitSpatial(srcSpatial)
     /*
     NAStat.statsWithMissing( spatial.map(ary => Array(ary.size.toDouble)) )
@@ -153,7 +171,7 @@ Array(stats: (count: 5,776,605, mean: 50.000000, stdev: 0.000000, max: 50.000000
 20151230 20151231 20151227 20160101 20151228 20151229 20160102 20160103 20160104 20160105 20160106
      */
     // 將GPS紀錄轉成 detail record
-    val details = spatialTok2Detail(spatialToks).cache()
+    val details = tok2Detail(spatialToks).cache()
     /*
     println(subset.take(5).map{ ary => ary.mkString(",")}.mkString("\n"))
 20160103,4b6b6fc4af31748d3b9f13781fe86503,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,120.9150694,31.1202111,120.92551,31.12262,120.92551,31.12262,120.9150694,31.1202111
@@ -211,7 +229,7 @@ Array(stats: (count: 5,776,605, mean: 50.000000, stdev: 0.000000, max: 50.000000
 = Array([121.1916611,31.1527695], [121.4451389,31.1443195], [121.47039,31.33998001], [121.51515,31.2110111], [121.53047,31.30082])
      */
     // 定義四大區域
-    val areas: immutable.Map[Int, Seq[Double]] = sc.
+    val areas = sc.
       broadcast( Seq(
       0->Seq(121.44149, 121.48956, 31.2354, 31.30025),  // 大宁地区
       1->Seq(121.49814, 121.55445, 31.23981, 31.28999), // 北外滩区域
@@ -288,8 +306,6 @@ Array(stats: (count: 5,776,605, mean: 50.000000, stdev: 0.000000, max: 50.000000
     // 驗證
     /*
     println(newKModel.head._2.clusterCenters.map{ vec => vec.toArray.mkString(";")}.mkString("\n"))
-     */
-    /*
 121.47904218021975;31.27436613439561
 121.4822382;31.242465427164177
 121.46295560847456;31.268907813050856
@@ -324,16 +340,16 @@ centers=[[121.48775176810342,31.226870036293093]], counts=[763932] centers=[[121
 3 ==================================================
 centers=[[121.52187648039215,31.231059664313722]], counts=[361639] centers=[[121.5136195622222,31.21369013822222]], counts=[428490] centers=[[121.51504965714284,31.19749158371429]], counts=[342004] centers=[[121.54395201166665,31.226609231833336]], counts=[235903] centers=[[121.5247843088889,31.208801892]], counts=[367574] centers=[[121.55043973333335,31.209229098333328]], counts=[205962] centers=[[121.54822319090908,31.195514252272734]], counts=[114235] centers=[[121.5122770906977,31.230297268604662]], counts=[578056] centers=[[121.53635720454548,31.212127111363635]], counts=[274670] centers=[[121.52864429887637,31.225297347865173]], counts=[400688]
      */
-    // 將 detail record 對應至四大區域與分群群組
-    val spatialDetails = details.mapPartitions{ ite =>
-      ite.flatMap{ case (imsi, date, hour, vec) =>
-        areas.find{ case (idx, area) => vec(0) > area(0) && vec(0) < area(1) && vec(1) > area(2) && vec(1) < area(3) } match {
-          case None => None
-          case Some((idx, area)) => Some( spatialDetail(imsi, date, hour, vec(0), vec(1), idx, (kmodels(idx)).predict(vec)) ) } } }.
+    // detail record 增加四大區域與分群群組
+    var spatialDetails: RDD[spatialDetail] = details.
+      mapPartitions{ ite =>
+        ite.flatMap{ case (imsi, date, hour, vec) =>
+          areas.find{ case (idx, area) => vec(0) > area(0) && vec(0) < area(1) && vec(1) > area(2) && vec(1) < area(3) } match {
+            case None => None
+            case Some((idx, area)) => Some( spatialDetail(imsi, date, hour, vec(0), vec(1), idx, (kmodels(idx)).predict(vec)) ) } } }.
       cache
-    //
-    println(spatialDetails.take(5).map{ record => spatialDetail2String(record) }.mkString("\n"))
     /*
+    println(spatialDetails.take(5).map{ record => spatialDetail2String(record) }.mkString("\n"))
 99e7e093f00fa32f36b051c18de98380,20151229,13,121.5225,31.25561001,1,6
 99e7e093f00fa32f36b051c18de98380,20151229,14,121.46884,31.19959001,2,7
 99e7e093f00fa32f36b051c18de98380,20151229,15,121.521368,31.27020701,1,6
@@ -341,19 +357,16 @@ centers=[[121.52187648039215,31.231059664313722]], counts=[361639] centers=[[121
 40fe7f8e47c3e89a4d4551c855df46f8,20160106,8,121.44609,31.20208001,2,6
     spatialDetails.count = 19722375
      */
-    // 儲存
-    path = "file:///home/leoricklin/dataset/woplus/spatial.detail"
-
-    val detailsAreaClusterByArea: immutable.Map[Int, RDD[(String, String, Int, Vector, Int, Int)]] = areas.map{ case (idx, area) =>
-      (idx, spatialDetails.filter{ case (imsi, date, hour, xy, areaid, clusterid) => areaid == idx }) }
+    // 根據四大區域區分
+    val spatialDetailsByArea: immutable.Map[Int, RDD[spatialDetail]] = areas.
+      map{ case (idx, area) =>
+        (idx, spatialDetails.filter{ spatialDetail => spatialDetail.areaid == idx }) }
     /*
     detailsAreaClusterByArea.map{ case (idx, details) => f"${idx},${details.count()}" }.mkString("\n")
-0,5537069
-1,2957485
-2,7918600
-3,3309221
+0,5537069 1,2957485 2,7918600 3,3309221
      */
-    detailsAreaClusterByArea.foreach{ case (idx, details) =>
+    // 儲存
+    spatialDetailsByArea.foreach{ case (idx, details) =>
       path = f"/home/leoricklin/dataset/woplus/spatial.detail/${idx}%02d"
       saveSpatialDetail(sc, details, path) }
     /*
@@ -369,6 +382,81 @@ bf3f04034044fd5c9d5f9445c3a3eda3,20151229,10,121.47773,31.24814,0,1
     uniqXyByAreas.foreach{ case (idx, vecs) => vecs.unpersist(true) }
     xyByAreas.foreach{ case (idx, vecs) => vecs.unpersist(true) }
     details.unpersist(true)
-    spatialDetails.unpersist(true)
   }
+
+  def reportA(sc:SparkContext, areas:Map[Int, Seq[Double]]) = {
+    val sqlContext = new SQLContext(sc)
+    import sqlContext.implicits._
+    // 載入用戶位置紀錄
+    val ite = areas.toIterator
+    var path = f"/home/leoricklin/dataset/woplus/spatial.detail/${ite.next()._1}%02d"
+    var spatialDetails = loadSpatialDetail(sc, path)
+    ite.foreach{ case (idx, area) =>
+      path = f"/home/leoricklin/dataset/woplus/spatial.detail/${idx}%02d"
+      spatialDetails = spatialDetails.union(loadSpatialDetail(sc, path))
+    }
+    spatialDetails.cache()
+    spatialDetails.getStorageLevel.useMemory
+    spatialDetails.count // 19722375
+    spatialDetails.filter( spdetail => spdetail.imei.equals("bf3f04034044fd5c9d5f9445c3a3eda3")).
+      collect().
+      map{ spdetail => spatialDetail2Str(spdetail)}.mkString("\n")
+    /*
+bf3f04034044fd5c9d5f9445c3a3eda3,20160102,9,121.4837113,31.2601311,0,8
+bf3f04034044fd5c9d5f9445c3a3eda3,20151230,10,121.47773,31.24814,0,1
+bf3f04034044fd5c9d5f9445c3a3eda3,20151229,10,121.47773,31.24814,0,1
+     */
+    spatialDetails.take(10).
+      map{ spdetail => spatialDetail2Str(spdetail)}.mkString("\n")
+    /*
+    spatialDetailsByArea.map{ case (idx, details) => f"${idx},${details.partitions.size}" }.mkString(" ")
+    // 0,6 1,6 2,6 3,6
+    spatialDetailsByArea.map{ case (idx, details) => f"${idx},${details.count()}" }.mkString(" ")
+    // 0,5537069 1,2957485 2,7918600 3,3309221
+     */
+    spatialDetails.toDF().registerTempTable("spatialdetail")
+    var df = sqlContext.sql("select imei from spatialdetail limit 1")
+    /*
+= [imei: string, date: string, hour: int, x: double, y: double, areaid: int, clusterid: int]
+     */
+    var result = df.collect()
+    println(result.map{ row => spatialDetail2Str(row2spatialDetail(row)) }.mkString("\n"))
+    result.map{ row => row.getString(0) }.mkString("\n")
+    /*
+bf3f04034044fd5c9d5f9445c3a3eda3,20160102,9,121.4837113,31.2601311,0,8
+     */
+    // 列出用戶位置紀錄的日期
+    df = sqlContext.sql("select date from spatialdetail").distinct()
+    result = df.collect()
+    println(result.map{ row => row.getString(0) }.mkString(" "))
+    /*
+20151227 20151228 20151229 20151230 20151231 20160101 20160102 20160103 20160104 20160105 20160106
+     */
+    // 載入用戶標籤紀錄
+    //
+    df = sqlContext.sql("select s.imei, s.date, s.hour, s.x, s.y, s.areaid, s.clusterid, u.features" +
+      " from" +
+      "  ( select * from spatialdetail where date = '20160101' and hour = 10 and areaid = 0 and clusterid = 0" +
+      "  ) s" +
+      " inner join usertag u" +
+      " on s.imei = u.imei")
+    /*
+= [imei: string, date: string, hour: int, x: double, y: double,
+   areaid: int, clusterid: int, features: array<double>
+     */
+    result = df.collect()
+    result.
+      map{ row =>
+        val spatial = Row(
+          row.getString(0),row.getString(1),row.getInt(2),row.getDouble(3),row.getDouble(4),
+          row.getInt(5),row.getInt(6))
+        val feature = row.getSeq(7).mkString(",")
+        f"${spatialDetail2Str(row2spatialDetail(spatial))},${feature}" }.
+      mkString("\n")
+    //
+    spatialDetails.unpersist(true)
+
+
+  }
+
 }

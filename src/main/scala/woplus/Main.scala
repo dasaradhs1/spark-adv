@@ -22,21 +22,6 @@ object Main {
 
 
 
-  def profile(sc:SparkContext) = {
-    /*
-wc -l /media/sf_WORKSPACE.2W/dataset/woplus/userprofile/profile.csv
-2391167 /media/sf_WORKSPACE.2W/dataset/woplus/userprofile/profile.csv
-     */
-    val srcProfile = sc.textFile("file:///home/leo/woplus/userprofile/").
-      map{_.split(",")}.
-      filter{ case toks => !toks(0).contains("IMEI") }.
-      cache
-    /*
-    NAStat.statsWithMissing( srcProfile.map{ toks => Array(toks.size.toDouble)} )
-Array(stats: (count: 2391166, mean: 24.000000, stdev: 0.000000, max: 24.000000, min: 24.000000), NaN: 0)
-     */
-    srcProfile.unpersist(true)
-  }
 
 
   def main(args: Array[String]) {
